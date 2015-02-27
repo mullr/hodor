@@ -7,13 +7,13 @@ int scheme_entry();
 #define fixnum_tag    0x0
 #define fixnum_shift  2
 
-#define char_mask     0xff 
+#define char_mask     0xff
 #define char_tag      0x0f
 #define char_shift    8
 
-#define bool_mask     0x7f 
+#define bool_mask     0x7f
 #define bool_tag      0x3f
-#define bool_shift    7  
+#define bool_shift    7
 
 #define empty_list    47
 
