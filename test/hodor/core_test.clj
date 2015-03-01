@@ -37,5 +37,19 @@
          '(boolean? false) "true"
          '(boolean? 42) "false"
          '(boolean? \a) "false"
-         '(boolean? :empty-list) "false"
+         '(boolean? :empty-list) "false"))
+
+  (testing "binary primitives"
+    (are [exp val] (= (compile-and-run exp) val)
+         '(+ 1 1) "2"
+         '(+ 1 0) "1"
+
+         '(- 2 1) "1"
+         '(- 1 0) "1"
+
+         '(* 2 2) "4"
+         '(* 1 0) "0"
+         '(* -2 2) "-4"
+         '(* 2 -2) "-4"
+         '(* -2 -2) "4"
          )))
