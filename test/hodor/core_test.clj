@@ -3,6 +3,24 @@
   (:require [clojure.test :refer :all]
             [hodor.core :refer :all]))
 
+(deftest encode-immediates-phase
+  (are [in out] (= (encode-immediates in) out)
+       [["movl" 1 "%eax"]] [["movl" "$4" "%eax"]]))
+
+(deftest codegen-stack-ops-phase
+  (is (= (codegen-stack-ops
+          [["movl" 1 "%eax"]
+           [:push "%eax"]
+           ["movl" 2 "%eax"]
+           [:push "%eax"]
+           ["addl" [:stack 0] [:stack 1]]])
+
+         [["movl" 1 "%eax"]
+          ["movl" "%eax" "-4(%esp)"]
+          ["movl" 2 "%eax"]
+          ["movl" "%eax" "-8(%esp)"]
+          ["addl" "-8(%esp)" "-4(%esp)"]])))
+
 (deftest immediates
   (are [exp val] (= (compile-and-run exp) val)
        0 "0"
@@ -11,7 +29,7 @@
        \Z "Z"
        :empty-list "()"
        'false "false"
-                            'true "true"))
+       'true "true"))
 
 (deftest unary-primitives
   (are [exp val] (= (compile-and-run exp) val)
@@ -53,5 +71,5 @@
        '(* -2 -2) "4"
 
        '(= 1 1) "true"
-       '(= 1 0) "false"
-       ))
+       '(= 1 0) "false"))
+
