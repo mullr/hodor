@@ -17,7 +17,47 @@
 
 (def empty-list    47)
 
+;;;;;;;;;; Compiler state threading
+(def empty-state
+  {:si 0
+   :code []
+   :call-depth 0})
+
+(defn thread-state [& fns]
+  (fn [state]
+    (loop [state state, fns fns]
+      (if (seq fns)
+        (let [state (update-in state [:call-depth] inc)
+              state ((first fns) state)
+              state (update-in state [:call-depth] dec)]
+          (recur state (rest fns)))
+        state))))
+
+(defn add-instr [s & is]
+  (update-in s [:code] concat is))
+
+(defn instr [& is]
+  (fn [s]
+    (update-in s [:code] concat is)))
+
+(defn asm-comment [& strs]
+  (fn [s]
+    (let [prefix (apply str (repeat (:call-depth s) "#"))
+          comment-str (str/join " " (cons prefix strs))]
+      (update-in s [:code] concat [[comment-str]]))))
+
+(defn push []
+  (fn [s]
+    (let [si (:si s)
+          new-si (- si 4)]
+     (-> s
+         (add-instr ["movl" "%eax" (str new-si "(%esp)")])
+         (assoc :si new-si)))))
+
+(declare compile-expr)
+
 ;;;;;;;;;; Immediates
+
 (defn immediate-rep [x]
   (cond
     (integer? x) (bit-shift-left x fixnum-shift)
@@ -31,105 +71,119 @@
 (defn immediate? [x]
   (not (nil? (immediate-rep x))))
 
+(defn compile-immediate [x]
+  (thread-state
+   (asm-comment "Immediate" x)
+   (instr ["movl" (str "$" (immediate-rep x)) "%eax" ])))
+
 ;;;;;;;; Primitive assembly dispatch
-(defn dispatch-primcall [x si] (if (seq x) (first x) :default))
+
+(defn dispatch-primcall [x] (if (seq x) (first x) :default))
+
 (defmulti compile-primcall dispatch-primcall)
-(defmethod compile-primcall :default [_ _] nil)
-(defn primcall? [x] (not (nil? (dispatch-primcall x 0))))
 
-(declare compile-expr)
+(defmethod compile-primcall :default [_] nil)
 
-;;;;;;;; Primitives
-(defmethod compile-primcall 'inc [[_ x] si]
-  (concat (compile-expr x si)
-          [["addl" (str "$" (immediate-rep 1)) "%eax"]]))
+(defn primcall? [x] (not (nil? (dispatch-primcall x))))
 
-(defmethod compile-primcall 'dec [[_ x] si]
-  (concat (compile-expr x si)
-          [["addl" (str "$" (immediate-rep -1)) "%eax"]]))
+(defmacro defprim [sym args-vec & body]
+  `(defmethod compile-primcall (quote ~sym) [[_ ~@args-vec]]
+     (thread-state ~@body)))
 
-(defmethod compile-primcall 'integer->char [[_ x] si]
-  (concat (compile-expr x si)
-          [["shl" "$6" "%eax"]
-           ["xor" "$0x3f" "%eax"]]))
+;;;;;;;; unary primitives
 
-(defmethod compile-primcall 'char->integer [[_ x] si]
-  (concat (compile-expr x si)
-          [["shr" "$6" "%eax"]]))
+(defprim inc [x]
+  (compile-expr x)
+  (instr ["addl" (str "$" (immediate-rep 1)) "%eax"]))
 
-(defn compare-literal [lit]
-  [["cmpl" lit "%eax"] ; Set ZF to 1 if eax is our value
-   ["movl" "$0" "%eax"]          ; Zero out eax
-   ["sete" "%al"]                ; Set the low byte of eax to 1 if the ZF flag is set
-   ["sall" "$7" "%eax"]          ; Convert eax to a tagged boolean
-   ["orl" "$63" "%eax"]])
+(defprim dec [x]
+  (compile-expr x)
+  (instr ["addl" (str "$" (immediate-rep -1)) "%eax"]))
 
-(defn compare-val [val]
-  (compare-literal (str "$" val)))
+(defprim integer->char [x]
+  (compile-expr x)
+  (instr ["shl" "$6" "%eax"]
+         ["xor" "$0x3f" "%eax"]))
+
+(defprim char->integer [x]
+  (compile-expr x)
+  (instr ["shr" "$6" "%eax"]))
 
 ;;;;;;;;; Unary predicates
-(defmethod compile-primcall 'zero? [[_ x] si]
-  (concat (compile-expr x si)
-          (compare-val (immediate-rep 0))))
+(defn compare-literal [lit]
+  (thread-state
+   (asm-comment "compare-literal" lit)
+   (instr ["cmpl" lit "%eax"]            ; Set ZF to 1 if eax is our value
+          ["movl" "$0" "%eax"]           ; Zero out eax
+          ["sete" "%al"]                 ; Set the low byte of eax to 1 if the ZF flag is set
+          ["sall" "$7" "%eax"]           ; Convert eax to a tagged boolean
+          ["orl" "$63" "%eax"])))
 
-(defmethod compile-primcall 'null? [[_ x] si]
-  (concat (compile-expr x si)
-          (compare-val (immediate-rep :empty-list))))
+(defn compare-immediate [x]
+  (compare-literal (str "$" (immediate-rep x))))
 
-(defmethod compile-primcall 'integer? [[_ x] si]
-  (concat (compile-expr x si)
-          [["andl" (str "$" fixnum-mask) "%eax"]]
-          (compare-val fixnum-tag)))
+(defprim zero? [x]
+  (compile-expr x)
+  (compare-immediate 0))
 
-(defmethod compile-primcall 'boolean? [[_ x] si]
-  (concat (compile-expr x si)
-          [["andl" (str "$" bool-mask) "%eax"]]
-          (compare-val bool-tag)))
+(defprim null? [x]
+  (compile-expr x)
+  (compare-immediate :empty-list))
+
+(defprim integer? [x]
+  (compile-expr x)
+  (instr ["andl" (str "$" fixnum-mask) "%eax"])
+  (compare-immediate fixnum-tag))
+
+(defprim boolean? [x]
+  (asm-comment "boolean?" x)
+  (compile-expr x)
+  (instr ["andl" (str "$" bool-mask) "%eax"])
+  (compare-literal (str "$" bool-tag)))
 
 ;;;;;;;;;;;; Binary primitives
-(defmethod compile-primcall '+ [[_ a b] si]
-  (let [si (- si 4)]
-    (concat (compile-expr a si)
-            [["movl" "%eax" (str si "(%esp)")]]
-            (compile-expr b si)
-            [["addl" (str si "(%esp)") "%eax"]])))
+(defprim + [a b]
+  (asm-comment "+" a b)
+  (compile-expr a)
+  (push)
+  (compile-expr b)
+  (fn [s] (add-instr s ["addl" (str (:si s) "(%esp)") "%eax"])))
 
-(defmethod compile-primcall '- [[_ a b] si]
-  (let [si (- si 4)]
-    (concat (compile-expr b si)
-            [["movl" "%eax" (str si "(%esp)")]]
-            (compile-expr a si)
-            [["subl" (str si "(%esp)") "%eax"]])))
-
+(defprim - [a b]
+  (asm-comment "-" a b)
+  (compile-expr b)
+  (push)
+  (compile-expr a)
+  (fn [s] (add-instr s ["subl" (str (:si s) "(%esp)") "%eax"])))
 
 ;; Numbers are encoded, which makes this challenging. When encoded,
 ;; straight enc(a) * enc(b) = enc(4 * a * b)
 ;; So, we use b/4 to compensate
-(defmethod compile-primcall '* [[_ a b] si]
-  (let [si (- si 4)]
-    (concat (compile-expr a si)
-            [["movl" "%eax" (str si "(%esp)")]]
-            (compile-expr b si)
-            [["shr" "$2" "%eax"]
-             ["imul" (str si "(%esp)") "%eax"]])))
+(defprim * [a b]
+  (asm-comment "*" a b)
+  (compile-expr a)
+  (push)
+  (compile-expr b)
+  (instr ["shr" "$2" "%eax"])
+  (fn [s] (add-instr s ["imul" (str (:si s) "(%esp)") "%eax"])))
 
-(defmethod compile-primcall '= [[_ a b] si]
-  (let [si (- si 4)]
-    (concat (compile-expr a si)
-            [["movl" "%eax" (str si "(%esp)")]]
-            (compile-expr b si)
-            (compare-literal (str si "(%esp)")))))
+(defprim = [a b]
+  (asm-comment "=" a b)
+  (compile-expr a)
+  (push)
+  (compile-expr b)
+  (fn [s] ((compare-literal (str (:si s) "(%esp)")) s)))
 
-(defmethod compile-primcall '< [[_ a b] si]
-  ;; ????????????????
-  []
-)
+;; (defmethod compile-primcall '< [[_ a b] si]
+;;   ;; ????????????????
+;;   []
+;; )
 
 ;;;;;;;;; Compiler
-(defn compile-expr [x si]
+(defn compile-expr [x]
   (cond
-    (immediate? x) [["movl" (str "$" (immediate-rep x)) "%eax"]]
-    (primcall? x) (compile-primcall x si)))
+    (immediate? x) (compile-immediate x)
+    (primcall? x) (compile-primcall x)))
 
 (defn asm-vec-to-line [asm-vec]
   (let [[op & args] asm-vec]
@@ -147,10 +201,11 @@
    ".cfi_endproc"])
 
 (defn compile [exp]
-  (concat prefix
-          (->> (compile-expr exp 0)
-               (map asm-vec-to-line))
-          suffix))
+  (let [start-state empty-state
+        end-state ((compile-expr exp) start-state)]
+    (concat prefix
+            (map asm-vec-to-line (:code end-state))
+            suffix)))
 
 (defn assemble [asm]
   (spit "code.s" (str/join "\n" asm))
