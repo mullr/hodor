@@ -1,7 +1,9 @@
 (ns hodor.core-test
   (:refer-clojure :exclude [compile])
   (:require [clojure.test :refer :all]
-            [hodor.core :refer :all]))
+            [hodor.core :refer :all]
+            [hodor.passes.codegen-stack-ops :refer [codegen-stack-ops]]
+            [hodor.passes.encode-immediates :refer [encode-immediates]]))
 
 (deftest encode-immediates-phase
   (are [in out] (= (encode-immediates in) out)
