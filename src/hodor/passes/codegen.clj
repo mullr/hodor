@@ -110,3 +110,19 @@
   [[:store-stack-var "%eax" sym]]
   (codegen-expr body)
   [[:pop-stack-var sym]])
+
+(defprim if [condition-expr true-expr false-expr]
+  (let [true-label  (name (gensym "true_branch_"))
+        false-label (name (gensym "false_branch_"))
+        end-label   (name (gensym "if_end_"))]
+    (concat
+     (codegen-expr condition-expr)
+     [["cmpl" false "%eax"]
+      ["je" false-label]
+      [(str true-label ":")]]
+     (codegen-expr true-expr)
+     [["jmp" end-label]
+      [(str false-label ":")]]
+     (codegen-expr false-expr)
+     [[(str end-label ":")]]
+     )))
