@@ -1,24 +1,32 @@
 (ns hodor.passes.codegen
-  (:require [hodor.passes.encode-immediates :refer [immediate?
+  (:require [clojure.zip :as zip]
+            [hodor.passes.util :refer [first-child]]
+            [hodor.passes.encode-immediates :refer [immediate?
                                                     fixnum-mask fixnum-tag
                                                     bool-mask bool-tag]]))
 
 (defn codegen-immediate [x]
   [["movl" x "%eax" ]])
 
-(defn dispatch-primcall [x] (if (seq x) (first x) :default))
-(defmulti codegen-primcall dispatch-primcall)
+(def all-primitives (atom #{}))
+(defn primitive? [x] (@all-primitives x))
+
+(defmulti codegen-primcall (fn [x] (if (seq? x) (first x) :default)))
 (defmethod codegen-primcall :default [_] nil)
-(defn primcall? [x] (not (nil? (dispatch-primcall x))))
+
+(defn primcall? [x] (and (seq? x) (primitive? (first x))))
 
 (defmacro defprim [sym args-vec & body]
+  (swap! all-primitives conj sym)
   `(defmethod codegen-primcall (quote ~sym) [[_ ~@args-vec]]
      (concat ~@body)))
 
 (defn codegen-expr [x]
   (cond
     (immediate? x) (codegen-immediate x)
-    (primcall? x) (codegen-primcall x)))
+    (primcall? x) (codegen-primcall x)
+    (symbol? x) [[:load-stack-var "%eax" x]]
+    :else (throw (ex-info "Can't codegen expression" {:expression x}))))
 
 ;;;;;;;; Unary primitives
 (defprim inc [x]
@@ -69,13 +77,15 @@
   (codegen-expr a)
   [[:push "%eax"]]
   (codegen-expr b)
-  [["addl" [:stack 0] "%eax"]])
+  [["addl" [:stack 0] "%eax"]
+   [:pop]])
 
 (defprim - [a b]
   (codegen-expr b)
   [[:push "%eax"]]
   (codegen-expr a)
-  [["subl" [:stack 0] "%eax"]])
+  [["subl" [:stack 0] "%eax"]
+   [:pop]])
 
 ;; Numbers are encoded, which makes this challenging. When encoded,
 ;; straight enc(a) * enc(b) = enc(4 * a * b)
@@ -85,11 +95,18 @@
   [[:push "%eax"]]
   (codegen-expr b)
   [["shr" "$2" "%eax"]
-   ["imul" [:stack 0] "%eax"]])
+   ["imul" [:stack 0] "%eax"]
+   [:pop]])
 
 (defprim = [a b]
   (codegen-expr a)
   [[:push "%eax"]]
   (codegen-expr b)
-  (compare-literal [:stack 0]))
+  (compare-literal [:stack 0])
+  [[:pop]])
 
+(defprim let [[sym value-expr] body]
+  (codegen-expr value-expr)
+  [[:store-stack-var "%eax" sym]]
+  (codegen-expr body)
+  [[:pop-stack-var sym]])

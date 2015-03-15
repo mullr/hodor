@@ -75,3 +75,9 @@
        '(= 1 1) "true"
        '(= 1 0) "false"))
 
+(deftest let-test
+  (are [exp val] (= (compile-and-run exp) val)
+       '(let [a 42] a) "42"
+       '(let [a 1] (let [b 2] (+ a b))) "3"
+       '(let [a 1] (let [a 2] a)) "2"
+       ))

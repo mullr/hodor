@@ -2,6 +2,7 @@
   (:refer-clojure :exclude [compile])
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
+            [hodor.passes.uniqueify-lets :refer [uniqueify-lets]]
             [hodor.passes.codegen :refer [codegen-expr]]
             [hodor.passes.codegen-stack-ops :refer [codegen-stack-ops]]
             [hodor.passes.encode-immediates :refer [encode-immediates]]))
@@ -21,8 +22,9 @@
   ["ret"
    ".cfi_endproc"])
 
-(defn compile [expr]
+(defn compile-to-asm [expr]
   (let [asm (-> expr
+                uniqueify-lets
                 codegen-expr
                 codegen-stack-ops
                 encode-immediates)]
@@ -30,11 +32,11 @@
             (map asm-vec-to-line asm)
             suffix)))
 
-(defn assemble [asm]
+(defn assemble [asm out-file]
   (spit "code.s" (str/join "\n" asm))
-  (println (sh "cc" "code.s" "runner.c" "-o" "a.out" "-m32")))
+  (println (sh "cc" "code.s" "runner.c" "-o" out-file "-m32")))
 
 (defn compile-and-run [exp]
-  (-> exp compile assemble)
+  (-> exp compile-to-asm (assemble "a.out"))
   (-> (sh "./a.out") :out (str/trim-newline)))
 

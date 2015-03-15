@@ -1,27 +1,39 @@
 (ns hodor.passes.codegen-stack-ops
   (:require [clojure.zip :as zip]
-            [hodor.passes.util :refer [asm-zip]]))
-
-(defn first-child [loc]
-  (when (zip/branch? loc)
-    (-> loc zip/down zip/node)))
+            [clojure.core.match :refer [match]]
+            [hodor.passes.util :refer [asm-zip first-child]]))
 
 (defn codegen-stack-ops [asm-vec]
-  (loop [si 0, loc (asm-zip asm-vec)]
-    (println "si" si)
-    (cond
-      (zip/end? loc) (zip/root loc)
+  (loop [si 0, env {}, loc (asm-zip asm-vec)]
+    (if (zip/end? loc)
+      (zip/root loc)
 
-      (= :push (first-child loc))
-      (let [new-si (- si 4)]
-        (recur new-si
-               (zip/edit loc (fn [[_ source]]
-                               ["movl" source (str new-si "(%esp)")]))))
+      (match (zip/node loc)
 
-      (= :stack (first-child loc))
-      (recur si
-             (zip/edit loc (fn [[_ relative-offset]]
-                             (println "relative-offset" relative-offset)
-                             (str (+ si (* 4 relative-offset)) "(%esp)"))))
+        [:push source-reg]
+        (let [new-si (- si 4)]
+          (recur new-si env
+                 (zip/replace loc ["movl" source-reg (str new-si "(%esp)")])))
 
-      :else (recur si (zip/next loc)))))
+        [:pop]
+        (recur (+ si 4) env (-> loc zip/remove zip/next))
+
+        [:stack relative-offset]
+        (recur si env
+               (zip/replace loc
+                            (str (+ si (* 4 relative-offset)) "(%esp)")))
+
+        [:store-stack-var source-reg sym]
+        (recur si (assoc env sym (- si 4))
+               (zip/replace loc [:push source-reg]))
+
+        [:load-stack-var dest-reg sym]
+        (let [offset (env sym)]
+          (recur si env
+                 (zip/replace loc ["movl" (str offset "(%esp)") dest-reg])))
+
+        [:pop-stack-var sym]
+        (recur si (dissoc env sym) (zip/replace loc [:pop]))
+
+        :else (recur si env (zip/next loc))))))
+

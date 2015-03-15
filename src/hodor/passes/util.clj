@@ -9,3 +9,7 @@
               seq
               (fn [node children] (with-meta children (meta node)))
               root))
+
+(defn first-child [loc]
+  (when (zip/branch? loc)
+    (-> loc zip/down zip/node)))
